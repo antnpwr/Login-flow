@@ -13,6 +13,10 @@ export default function RegisterPage() {
           <UserAddOutlined />
         </div>
         <Typography.Title level={1}>Create account</Typography.Title>
+        <Typography.Paragraph className="auth-copy">
+          Create a local Keycloak account from this website. LINE sign-in stays
+          brokered through Keycloak.
+        </Typography.Paragraph>
         <AuthFormActions mode="register" />
         <p className="auth-switch">
           Already registered? <Link href="/">Login</Link>

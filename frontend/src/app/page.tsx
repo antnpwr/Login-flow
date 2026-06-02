@@ -13,6 +13,10 @@ export default function LoginPage() {
           <SafetyCertificateOutlined />
         </div>
         <Typography.Title level={1}>Welcome back</Typography.Title>
+        <Typography.Paragraph className="auth-copy">
+          Sign in here with your Keycloak account. Passwords are sent only to
+          the server and stored by Keycloak.
+        </Typography.Paragraph>
         <AuthFormActions mode="login" />
         <p className="auth-switch">
           New here? <Link href="/register">Create an account</Link>
