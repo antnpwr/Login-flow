@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { createKeycloakUser, KeycloakRequestError } from "@/lib/keycloak";
+import { LineRequestError, verifyLineIdToken } from "@/lib/line";
 
 type RegisterRequestBody = {
   username?: unknown;
   email?: unknown;
   password?: unknown;
+  lineIdToken?: unknown;
 };
 
 function isValidEmail(email: string): boolean {
@@ -16,6 +18,8 @@ function validateRegisterBody(body: RegisterRequestBody) {
     typeof body.username === "string" ? body.username.trim() : "";
   const email = typeof body.email === "string" ? body.email.trim() : "";
   const password = typeof body.password === "string" ? body.password : "";
+  const lineIdToken =
+    typeof body.lineIdToken === "string" ? body.lineIdToken : "";
 
   if (username.length < 3) {
     return { error: "Username must be at least 3 characters." };
@@ -29,7 +33,11 @@ function validateRegisterBody(body: RegisterRequestBody) {
     return { error: "Password must be at least 8 characters." };
   }
 
-  return { username, email, password };
+  if (!lineIdToken) {
+    return { error: "Link your LINE account before creating an account." };
+  }
+
+  return { username, email, password, lineIdToken };
 }
 
 export async function POST(request: Request) {
@@ -51,10 +59,23 @@ export async function POST(request: Request) {
   }
 
   try {
-    await createKeycloakUser(validated);
+    const lineIdentity = await verifyLineIdToken(validated.lineIdToken);
+    await createKeycloakUser({
+      username: validated.username,
+      email: validated.email,
+      password: validated.password,
+      lineIdentity,
+    });
     return NextResponse.json({ ok: true });
   } catch (error) {
     if (error instanceof KeycloakRequestError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
+    }
+
+    if (error instanceof LineRequestError) {
       return NextResponse.json(
         { error: error.message },
         { status: error.status },

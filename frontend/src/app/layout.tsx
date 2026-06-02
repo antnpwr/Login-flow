@@ -34,10 +34,10 @@ export default function RootLayout({
                 Login Flow Demo
               </Link>
               <nav className="site-nav" aria-label="Primary navigation">
-              <Link href="/">Login</Link>
-              <Link href="/register">Register</Link>
-              <Link href="/line">LINE</Link>
-              <Link href="/profile">Profile</Link>
+                <Link href="/">Login</Link>
+                <Link href="/register">Register</Link>
+                <Link href="/link-line">Link LINE</Link>
+                <Link href="/profile">Profile</Link>
               </nav>
             </header>
             <main className="site-main">{children}</main>

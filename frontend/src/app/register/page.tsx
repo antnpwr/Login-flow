@@ -14,8 +14,8 @@ export default function RegisterPage() {
         </div>
         <Typography.Title level={1}>Create account</Typography.Title>
         <Typography.Paragraph className="auth-copy">
-          Create a local Keycloak account from this website. LINE sign-in stays
-          brokered through Keycloak.
+          Link LINE first, then create your Keycloak account. Every account
+          must have LINE attached before it can access the app.
         </Typography.Paragraph>
         <AuthFormActions mode="register" />
         <p className="auth-switch">

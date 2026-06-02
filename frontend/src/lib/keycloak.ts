@@ -9,10 +9,42 @@ type KeycloakAccessClaims = {
   resource_access?: Record<string, { roles?: string[] }>;
 };
 
+type KeycloakUserRepresentation = {
+  id?: string;
+  username?: string;
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  enabled?: boolean;
+  emailVerified?: boolean;
+  attributes?: Record<string, string[]>;
+};
+
+type KeycloakFederatedIdentity = {
+  identityProvider?: string;
+  userId?: string;
+  userName?: string;
+};
+
 type KeycloakTokenResponse = {
   access_token: string;
   refresh_token?: string;
   expires_in?: number;
+};
+
+export type LineIdentity = {
+  userId: string;
+  displayName?: string;
+  pictureUrl?: string;
+  email?: string;
+};
+
+export type UserLineInfo = {
+  lineLinked: boolean;
+  lineUserId?: string;
+  lineDisplayName?: string;
+  linePictureUrl?: string;
+  lineEmail?: string;
 };
 
 export type EmbeddedAuthUser = {
@@ -23,12 +55,17 @@ export type EmbeddedAuthUser = {
   roles: string[];
   accessToken: string;
   refreshToken?: string;
+  lineLinked: boolean;
+  lineUserId?: string;
+  lineDisplayName?: string;
+  linePictureUrl?: string;
 };
 
 type RegisterUserInput = {
   username: string;
   email: string;
   password: string;
+  lineIdentity: LineIdentity;
 };
 
 export class KeycloakRequestError extends Error {
@@ -84,6 +121,13 @@ function getRoles(claims: KeycloakAccessClaims): string[] {
   return Array.from(new Set([...realmRoles, ...clientRoles]));
 }
 
+function getFirstAttribute(
+  attributes: Record<string, string[]> | undefined,
+  name: string,
+): string | undefined {
+  return attributes?.[name]?.[0];
+}
+
 async function parseKeycloakError(response: Response): Promise<string> {
   const fallback = `Keycloak request failed with status ${response.status}`;
 
@@ -127,6 +171,9 @@ export async function loginWithPassword(
   const claims = decodeJwtPayload<KeycloakAccessClaims>(
     tokenResponse.access_token,
   );
+  const lineInfo = claims.sub
+    ? await getKeycloakUserLineInfo(claims.sub)
+    : { lineLinked: false };
 
   return {
     id: claims.sub ?? username,
@@ -136,6 +183,10 @@ export async function loginWithPassword(
     roles: getRoles(claims),
     accessToken: tokenResponse.access_token,
     refreshToken: tokenResponse.refresh_token,
+    lineLinked: lineInfo.lineLinked,
+    lineUserId: lineInfo.lineUserId,
+    lineDisplayName: lineInfo.lineDisplayName,
+    linePictureUrl: lineInfo.linePictureUrl,
   };
 }
 
@@ -201,6 +252,23 @@ async function findUserIdByUsername(username: string): Promise<string | null> {
   return users[0]?.id ?? null;
 }
 
+async function findUserIdByLineUserId(lineUserId: string): Promise<string | null> {
+  const response = await keycloakAdminFetch(
+    `/users?q=${encodeURIComponent(`line_user_id:${lineUserId}`)}`,
+  );
+
+  if (!response.ok) {
+    throw new KeycloakRequestError(await parseKeycloakError(response), response.status);
+  }
+
+  const users = (await response.json()) as KeycloakUserRepresentation[];
+  const matchingUser = users.find(
+    (user) => getFirstAttribute(user.attributes, "line_user_id") === lineUserId,
+  );
+
+  return matchingUser?.id ?? null;
+}
+
 async function assignRealmRole(userId: string, roleName: string): Promise<void> {
   const roleResponse = await keycloakAdminFetch(
     `/roles/${encodeURIComponent(roleName)}`,
@@ -248,11 +316,166 @@ async function setUserPassword(
   }
 }
 
+async function deleteKeycloakUser(userId: string): Promise<void> {
+  const response = await keycloakAdminFetch(`/users/${userId}`, {
+    method: "DELETE",
+  });
+
+  if (!response.ok && response.status !== 404) {
+    throw new KeycloakRequestError(await parseKeycloakError(response), response.status);
+  }
+}
+
+async function getKeycloakUser(userId: string): Promise<KeycloakUserRepresentation> {
+  const response = await keycloakAdminFetch(`/users/${userId}`);
+
+  if (!response.ok) {
+    throw new KeycloakRequestError(await parseKeycloakError(response), response.status);
+  }
+
+  return (await response.json()) as KeycloakUserRepresentation;
+}
+
+async function getFederatedIdentities(
+  userId: string,
+): Promise<KeycloakFederatedIdentity[]> {
+  const response = await keycloakAdminFetch(`/users/${userId}/federated-identity`);
+
+  if (!response.ok) {
+    throw new KeycloakRequestError(await parseKeycloakError(response), response.status);
+  }
+
+  return (await response.json()) as KeycloakFederatedIdentity[];
+}
+
+async function setLineAttributes(
+  userId: string,
+  lineIdentity: LineIdentity,
+): Promise<void> {
+  const user = await getKeycloakUser(userId);
+  const attributes = {
+    ...(user.attributes ?? {}),
+    line_user_id: [lineIdentity.userId],
+    line_display_name: [lineIdentity.displayName ?? ""],
+    line_picture_url: [lineIdentity.pictureUrl ?? ""],
+    line_email: [lineIdentity.email ?? ""],
+    line_linked_at: [new Date().toISOString()],
+  };
+
+  const response = await keycloakAdminFetch(`/users/${userId}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      ...user,
+      attributes,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new KeycloakRequestError(await parseKeycloakError(response), response.status);
+  }
+}
+
+export async function getKeycloakUserLineInfo(
+  userId: string,
+): Promise<UserLineInfo> {
+  const [user, federatedIdentities] = await Promise.all([
+    getKeycloakUser(userId),
+    getFederatedIdentities(userId),
+  ]);
+  const lineFederatedIdentity = federatedIdentities.find(
+    (identity) => identity.identityProvider === "line",
+  );
+  const lineUserId =
+    lineFederatedIdentity?.userId ??
+    getFirstAttribute(user.attributes, "line_user_id");
+
+  if (!lineUserId) {
+    return { lineLinked: false };
+  }
+
+  return {
+    lineLinked: true,
+    lineUserId,
+    lineDisplayName:
+      getFirstAttribute(user.attributes, "line_display_name") ??
+      lineFederatedIdentity?.userName,
+    linePictureUrl: getFirstAttribute(user.attributes, "line_picture_url"),
+    lineEmail: getFirstAttribute(user.attributes, "line_email"),
+  };
+}
+
+export async function linkLineIdentityToUser(
+  userId: string,
+  lineIdentity: LineIdentity,
+): Promise<UserLineInfo> {
+  const existingUserId = await findUserIdByLineUserId(lineIdentity.userId);
+
+  if (existingUserId && existingUserId !== userId) {
+    throw new KeycloakRequestError(
+      "This LINE account is already linked to another user.",
+      409,
+    );
+  }
+
+  const federatedIdentities = await getFederatedIdentities(userId);
+  const existingLineIdentity = federatedIdentities.find(
+    (identity) => identity.identityProvider === "line",
+  );
+
+  if (
+    existingLineIdentity?.userId &&
+    existingLineIdentity.userId !== lineIdentity.userId
+  ) {
+    throw new KeycloakRequestError(
+      "This user is already linked to a different LINE account.",
+      409,
+    );
+  }
+
+  if (!existingLineIdentity) {
+    const response = await keycloakAdminFetch(
+      `/users/${userId}/federated-identity/line`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          identityProvider: "line",
+          userId: lineIdentity.userId,
+          userName: lineIdentity.displayName ?? lineIdentity.userId,
+        }),
+      },
+    );
+
+    if (response.status === 404) {
+      throw new KeycloakRequestError(
+        "Keycloak identity provider alias 'line' is missing.",
+        500,
+      );
+    }
+
+    if (!response.ok && response.status !== 409) {
+      throw new KeycloakRequestError(await parseKeycloakError(response), response.status);
+    }
+  }
+
+  await setLineAttributes(userId, lineIdentity);
+  return getKeycloakUserLineInfo(userId);
+}
+
 export async function createKeycloakUser({
   username,
   email,
   password,
+  lineIdentity,
 }: RegisterUserInput): Promise<void> {
+  const existingUserId = await findUserIdByLineUserId(lineIdentity.userId);
+
+  if (existingUserId) {
+    throw new KeycloakRequestError(
+      "This LINE account is already linked to another user.",
+      409,
+    );
+  }
+
   const response = await keycloakAdminFetch("/users", {
     method: "POST",
     body: JSON.stringify({
@@ -281,6 +504,12 @@ export async function createKeycloakUser({
     throw new KeycloakRequestError("Created user could not be found.", 500);
   }
 
-  await setUserPassword(userId, password);
-  await assignRealmRole(userId, "user");
+  try {
+    await setUserPassword(userId, password);
+    await linkLineIdentityToUser(userId, lineIdentity);
+    await assignRealmRole(userId, "user");
+  } catch (error) {
+    await deleteKeycloakUser(userId);
+    throw error;
+  }
 }

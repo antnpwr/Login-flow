@@ -1,24 +1,11 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
-import Keycloak from "next-auth/providers/keycloak";
-import { loginWithPassword, type EmbeddedAuthUser } from "@/lib/keycloak";
-
-type KeycloakProfile = {
-  preferred_username?: string;
-  realm_access?: {
-    roles?: string[];
-  };
-  resource_access?: Record<string, { roles?: string[] }>;
-};
-
-function getProfileRoles(profile: KeycloakProfile): string[] {
-  const realmRoles = profile.realm_access?.roles ?? [];
-  const clientRoles = Object.values(profile.resource_access ?? {}).flatMap(
-    (resource) => resource.roles ?? [],
-  );
-
-  return Array.from(new Set([...realmRoles, ...clientRoles]));
-}
+import {
+  getKeycloakUserLineInfo,
+  loginWithPassword,
+  type EmbeddedAuthUser,
+  type UserLineInfo,
+} from "@/lib/keycloak";
 
 function isEmbeddedAuthUser(user: unknown): user is EmbeddedAuthUser {
   return (
@@ -52,39 +39,56 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         }
       },
     }),
-    Keycloak({
-      issuer: process.env.AUTH_KEYCLOAK_ISSUER,
-    }),
   ],
   session: {
     strategy: "jwt",
   },
   callbacks: {
-    jwt({ token, account, profile, user }) {
+    jwt({ token, user }) {
       if (isEmbeddedAuthUser(user)) {
+        token.keycloakUserId = user.id;
         token.accessToken = user.accessToken;
         token.refreshToken = user.refreshToken;
         token.username = user.username;
         token.roles = user.roles;
-      }
-
-      if (account?.access_token) {
-        token.accessToken = account.access_token;
-      }
-
-      if (account?.refresh_token) {
-        token.refreshToken = account.refresh_token;
-      }
-
-      if (profile) {
-        const keycloakProfile = profile as KeycloakProfile;
-        token.username = keycloakProfile.preferred_username;
-        token.roles = getProfileRoles(keycloakProfile);
+        token.lineLinked = user.lineLinked;
+        token.lineUserId = user.lineUserId;
+        token.lineDisplayName = user.lineDisplayName;
+        token.linePictureUrl = user.linePictureUrl;
       }
 
       return token;
     },
-    session({ session, token }) {
+    async session({ session, token }) {
+      let lineInfo: UserLineInfo = {
+        lineLinked:
+          typeof token.lineLinked === "boolean" ? token.lineLinked : false,
+        lineUserId:
+          typeof token.lineUserId === "string" ? token.lineUserId : undefined,
+        lineDisplayName:
+          typeof token.lineDisplayName === "string"
+            ? token.lineDisplayName
+            : undefined,
+        linePictureUrl:
+          typeof token.linePictureUrl === "string"
+            ? token.linePictureUrl
+            : undefined,
+      };
+
+      if (typeof token.keycloakUserId === "string") {
+        try {
+          lineInfo = await getKeycloakUserLineInfo(token.keycloakUserId);
+        } catch {
+          lineInfo = {
+            lineLinked: false,
+          };
+        }
+      }
+
+      session.user.keycloakUserId =
+        typeof token.keycloakUserId === "string"
+          ? token.keycloakUserId
+          : undefined;
       session.accessToken =
         typeof token.accessToken === "string" ? token.accessToken : undefined;
       session.refreshToken =
@@ -92,6 +96,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.username =
         typeof token.username === "string" ? token.username : undefined;
       session.user.roles = Array.isArray(token.roles) ? token.roles : [];
+      session.user.lineLinked = lineInfo.lineLinked;
+      session.user.lineUserId = lineInfo.lineUserId;
+      session.user.lineDisplayName = lineInfo.lineDisplayName;
+      session.user.linePictureUrl = lineInfo.linePictureUrl;
       return session;
     },
   },

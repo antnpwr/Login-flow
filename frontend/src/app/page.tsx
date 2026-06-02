@@ -15,7 +15,8 @@ export default function LoginPage() {
         <Typography.Title level={1}>Welcome back</Typography.Title>
         <Typography.Paragraph className="auth-copy">
           Sign in here with your Keycloak account. Passwords are sent only to
-          the server and stored by Keycloak.
+          the server and stored by Keycloak. Accounts without LINE linked will
+          be sent to the LINE linking page.
         </Typography.Paragraph>
         <AuthFormActions mode="login" />
         <p className="auth-switch">

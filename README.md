@@ -2,7 +2,7 @@
 
 A small authentication demo using **Next.js**, **Auth.js / NextAuth**, **Keycloak**, and **PostgreSQL**.
 
-The app now uses embedded local login for email/username and password, while Keycloak still owns the real user store:
+The app uses embedded local login for email/username and password, while Keycloak still owns the real user store:
 
 ```text
 Next.js form
@@ -12,14 +12,13 @@ Next.js form
   -> /profile
 ```
 
-LINE login stays redirect-based through Keycloak identity brokering:
+Every account must also be linked with LINE before it can access the protected profile:
 
 ```text
-LINE rich menu / LIFF
-  -> Next.js /line
-  -> Keycloak with kc_idp_hint=line
-  -> LINE
-  -> Keycloak
+Next.js /register or /link-line
+  -> LIFF gets LINE ID token
+  -> Next.js server verifies token with LINE
+  -> Next.js server stores LINE link in Keycloak
   -> /profile
 ```
 
@@ -35,10 +34,11 @@ LINE rich menu / LIFF
 
 ```text
 /              Embedded login form
-/register      Embedded registration form
-/line          LINE LIFF / rich menu entry
+/register      Embedded registration form with required LINE link
+/link-line     Existing-account LINE linking page
 /profile       Protected signed-in profile page
 /api/register  Server-only Keycloak user creation route
+/api/link-line Server-only existing-account LINE link route
 ```
 
 ## Run Keycloak
@@ -115,6 +115,19 @@ view-realm
 
 Make sure the realm has a `user` role. New embedded registrations receive this role automatically.
 
+LINE identity provider alias:
+
+```text
+Type: OpenID Connect v1.0
+Alias: line
+Discovery URL: https://access.line.me/.well-known/openid-configuration
+Client ID: <LINE Login Channel ID>
+Client Secret: <LINE Login Channel Secret>
+Default scopes: openid profile email
+```
+
+The website verifies LIFF ID tokens itself, but Keycloak still needs the `line` alias so the app can store the official federated identity link on the user.
+
 ## Frontend Environment
 
 Local env file:
@@ -136,6 +149,9 @@ KEYCLOAK_ADMIN_BASE_URL=http://localhost:8080
 KEYCLOAK_ADMIN_REALM=login-flow
 KEYCLOAK_ADMIN_CLIENT_ID=nextjs-user-admin
 KEYCLOAK_ADMIN_CLIENT_SECRET=<nextjs-user-admin-client-secret>
+NEXT_PUBLIC_LIFF_ID=<line-liff-id>
+LINE_LOGIN_CHANNEL_ID=<line-login-channel-id>
+NEXT_PUBLIC_LIFF_REDIRECT_URI=<optional-public-https-register-or-link-line-url>
 ```
 
 ## Local Login Flow
@@ -145,8 +161,9 @@ User opens /
   -> enters email/username and password
   -> Auth.js Credentials provider sends them to Keycloak server-side
   -> Keycloak returns tokens
-  -> Auth.js creates a JWT session
-  -> user goes to /profile
+  -> app checks Keycloak for LINE link
+  -> linked user goes to /profile
+  -> unlinked user goes to /link-line
 ```
 
 The app does not store passwords. It only forwards them server-side to Keycloak.
@@ -155,9 +172,12 @@ The app does not store passwords. It only forwards them server-side to Keycloak.
 
 ```text
 User opens /register
+  -> links LINE with LIFF
   -> enters username, email, and password
+  -> /api/register verifies the LINE ID token with LINE
   -> /api/register creates the user in Keycloak
   -> /api/register sets the Keycloak password
+  -> /api/register stores the LINE federated identity and attributes in Keycloak
   -> /api/register assigns the user role
   -> the app signs the user in
   -> user goes to /profile
@@ -165,38 +185,49 @@ User opens /register
 
 For this demo, the registration route fills the required Keycloak profile name fields from the username so the user can log in immediately.
 
-## LINE Login Flow
-
-LINE should be added inside Keycloak as an identity provider. The Next.js app does not validate LINE tokens or call LINE profile APIs directly.
-
-Keycloak LINE identity provider:
+## Existing User LINE Link Flow
 
 ```text
-Type: OpenID Connect v1.0
-Alias: line
-Discovery URL: https://access.line.me/.well-known/openid-configuration
+Existing user opens /
+  -> enters username/email and password
+  -> app sees no LINE link
+  -> redirects to /link-line
+  -> user links LINE with LIFF
+  -> /api/link-line verifies the LINE ID token with LINE
+  -> /api/link-line stores the LINE federated identity and attributes in Keycloak
+  -> user goes to /profile
+```
+
+Stored Keycloak user attributes:
+
+```text
+line_user_id
+line_display_name
+line_picture_url
+line_email
+line_linked_at
+```
+
+## LINE Setup
+
+```text
+LIFF Endpoint URL: http://localhost:3000/register
 Scopes: openid profile email
 ```
 
-LINE broker callback URL:
+For local LIFF testing, LINE usually needs a public HTTPS endpoint. Use an HTTPS tunnel and set the LIFF endpoint to:
 
 ```text
-http://localhost:8080/realms/login-flow/broker/line/endpoint
+https://<public-domain>/register
 ```
 
-LIFF endpoint URL:
+If you use a tunnel, also set the frontend redirect override before restarting Next.js:
 
 ```text
-https://<public-domain>/line
+NEXT_PUBLIC_LIFF_REDIRECT_URI=https://<public-domain>/register
 ```
 
-Rich menu URL:
-
-```text
-https://liff.line.me/<liff-id>
-```
-
-For local LINE testing, expose the frontend with a public HTTPS tunnel and use the tunneled `/line` URL as the LIFF endpoint.
+For registration, the redirect URL must end with `/register` so LINE returns to the registration form. For existing-account linking, use the same public domain with `/link-line` when testing that route.
 
 ## Checks
 
@@ -211,8 +242,10 @@ Manual checks:
 ```text
 Valid local login reaches /profile
 Wrong password shows an inline error
-New registration creates a Keycloak user
-New registration receives the user role
+Registration cannot submit before LINE is linked
+New registration creates a Keycloak user with user role and LINE link
+Duplicate LINE account linking is rejected
 /profile redirects unauthenticated users
-/line still starts Keycloak LINE broker login
+Unlinked authenticated users are redirected to /link-line
+After linking LINE, users can access /profile
 ```
